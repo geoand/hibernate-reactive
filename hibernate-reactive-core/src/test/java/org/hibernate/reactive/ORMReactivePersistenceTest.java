@@ -5,12 +5,29 @@
  */
 package org.hibernate.reactive;
 
+import jakarta.persistence.CascadeType;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.OneToMany;
+import jakarta.persistence.PostLoad;
+import jakarta.persistence.PostPersist;
+import jakarta.persistence.PostRemove;
+import jakarta.persistence.PostUpdate;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreRemove;
+import jakarta.persistence.PreUpdate;
+import jakarta.persistence.Transient;
+import jakarta.persistence.Version;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 
+import org.hibernate.Hibernate;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
+import org.hibernate.annotations.BatchSize;
 import org.hibernate.boot.registry.StandardServiceRegistry;
 import org.hibernate.boot.registry.StandardServiceRegistryBuilder;
 import org.hibernate.cfg.Configuration;
@@ -29,6 +46,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
 import static org.hibernate.reactive.containers.DatabaseConfiguration.DBType.POSTGRESQL;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 
 /**
  * This test class verifies that data can be persisted and queried on the same database
@@ -43,7 +62,7 @@ public class ORMReactivePersistenceTest extends BaseReactiveTest {
 
 	@Override
 	protected Collection<Class<?>> annotatedEntities() {
-		return List.of( Flour.class );
+		return List.of( Node.class, Element.class );
 	}
 
 	@Before
@@ -66,92 +85,111 @@ public class ORMReactivePersistenceTest extends BaseReactiveTest {
 
 	@Test
 	public void testORMWithStageSession(TestContext context) {
-		final Flour almond = new Flour( 1, "Almond", "made from ground almonds.", "Gluten free" );
+		Node basik = new Node( "Child" );
+		basik.parent = new Node( "Parent" );
+		basik.elements.add( new Element( basik ) );
+		basik.elements.add( new Element( basik ) );
+		basik.elements.add( new Element( basik ) );
+		basik.parent.elements.add( new Element( basik.parent ) );
+		basik.parent.elements.add( new Element( basik.parent ) );
 
 		Session session = ormFactory.openSession();
 		session.beginTransaction();
-		session.persist( almond );
+		session.persist(basik);
 		session.getTransaction().commit();
 		session.close();
 
-		// Check database with Stage session and verify 'almond' flour exists
-		test( context, openSession()
-				.thenCompose( stageSession -> stageSession.find( Flour.class, almond.id ) )
-				.thenAccept( entityFound -> context.assertEquals( almond, entityFound ) )
-		);
+		List<Node> list =
+				ormFactory.openSession().createQuery("from Node n order by id", Node.class)
+						.getResultList();
+
+		assertEquals(2, list.size());
+		Node n1 = list.get( 0 );
+		Node n2 = list.get( 1 );
+		assertFalse(Hibernate.isInitialized(n1.elements));
+		assertFalse(Hibernate.isInitialized(n2.elements));
 	}
 
-	@Test
-	public void testORMWitMutinySession(TestContext context) {
-		final Flour rose = new Flour( 2, "Rose", "made from ground rose pedals.", "Full fragrance" );
 
-		Session ormSession = ormFactory.openSession();
-		ormSession.beginTransaction();
-		ormSession.persist( rose );
-		ormSession.getTransaction().commit();
-		ormSession.close();
+	@Entity(name = "Node")
+	@Table(name = "Node")
+	@BatchSize(size = 5)
+	public static class Node {
 
-		// Check database with Mutiny session and verify 'rose' flour exists
-		test( context, openMutinySession()
-				.chain( session -> session.find( Flour.class, rose.id ) )
-				.invoke( foundRose -> context.assertEquals( rose, foundRose ) )
-		);
-	}
-
-	@Entity(name = "Flour")
-	@Table(name = "Flour")
-	public static class Flour {
 		@Id
-		private Integer id;
-		private String name;
-		private String description;
-		private String type;
+		@GeneratedValue
+		Integer id;
+		@Version
+		Integer version;
+		String string;
 
-		public Flour() {
+		@ManyToOne(fetch = FetchType.LAZY, cascade = { CascadeType.PERSIST, CascadeType.REFRESH, CascadeType.MERGE, CascadeType.REMOVE })
+		Node parent;
+
+		@OneToMany(fetch = FetchType.LAZY, cascade = { CascadeType.PERSIST, CascadeType.REMOVE }, mappedBy = "node")
+		@BatchSize(size = 5)
+		List<Element> elements = new ArrayList<>();
+
+		@Transient
+		boolean prePersisted;
+		@Transient
+		boolean postPersisted;
+		@Transient
+		boolean preUpdated;
+		@Transient
+		boolean postUpdated;
+		@Transient
+		boolean postRemoved;
+		@Transient
+		boolean preRemoved;
+		@Transient
+		boolean loaded;
+
+		public Node(String string) {
+			this.string = string;
 		}
 
-		public Flour(Integer id, String name, String description, String type) {
-			this.id = id;
-			this.name = name;
-			this.description = description;
-			this.type = type;
+		Node() {
 		}
 
-		public Integer getId() {
-			return id;
+		@PrePersist
+		void prePersist() {
+			prePersisted = true;
 		}
 
-		public void setId(Integer id) {
-			this.id = id;
+		@PostPersist
+		void postPersist() {
+			postPersisted = true;
 		}
 
-		public String getName() {
-			return name;
+		@PreUpdate
+		void preUpdate() {
+			preUpdated = true;
 		}
 
-		public void setName(String name) {
-			this.name = name;
+		@PostUpdate
+		void postUpdate() {
+			postUpdated = true;
 		}
 
-		public String getDescription() {
-			return description;
+		@PreRemove
+		void preRemove() {
+			preRemoved = true;
 		}
 
-		public void setDescription(String description) {
-			this.description = description;
+		@PostRemove
+		void postRemove() {
+			postRemoved = true;
 		}
 
-		public String getType() {
-			return type;
-		}
-
-		public void setType(String type) {
-			this.type = type;
+		@PostLoad
+		void postLoad() {
+			loaded = true;
 		}
 
 		@Override
 		public String toString() {
-			return name;
+			return id + ": " + string;
 		}
 
 		@Override
@@ -162,15 +200,31 @@ public class ORMReactivePersistenceTest extends BaseReactiveTest {
 			if ( o == null || getClass() != o.getClass() ) {
 				return false;
 			}
-			Flour flour = (Flour) o;
-			return Objects.equals( name, flour.name ) &&
-					Objects.equals( description, flour.description ) &&
-					Objects.equals( type, flour.type );
+			Node node = (Node) o;
+			return Objects.equals( string, node.string );
 		}
 
 		@Override
 		public int hashCode() {
-			return Objects.hash( name, description, type );
+			return Objects.hash( string );
+		}
+	}
+
+	@Entity(name = "Element")
+	@Table(name = "Element")
+	public static class Element {
+		@Id
+		@GeneratedValue
+		Integer id;
+
+		@ManyToOne(fetch = FetchType.LAZY)
+		Node node;
+
+		public Element(Node node) {
+			this.node = node;
+		}
+
+		Element() {
 		}
 	}
 }
